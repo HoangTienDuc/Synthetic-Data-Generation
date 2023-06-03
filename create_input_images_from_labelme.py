@@ -61,8 +61,8 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='Extract objects from data labeled with labelme')
-    parser.add_argument('--input_dir', type=str, required=True, help='Path to input images and labels')
-    parser.add_argument('--output_dir', type=str, required=True, help='Path where output images will be saved')
+    parser.add_argument('--input_dir', type=str, default="/ws/dev/Computer-Vision-Synthetic-Data-Generation/data/tmp", help='Path to input images and labels')
+    parser.add_argument('--output_dir', type=str, default="/ws/dev/Computer-Vision-Synthetic-Data-Generation/data/output", help='Path where output images will be saved')
     args = parser.parse_args()
 
     extract_objects_from_labelme_data(args.input_dir, args.output_dir)
