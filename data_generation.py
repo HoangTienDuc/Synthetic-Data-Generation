@@ -16,12 +16,15 @@ from joblib import Parallel, delayed
 from typing import List
 import time
 
-def check_point_in_polygon(point, poligon):
-    # Point objects(Geo-coordinates)
-    point = Point(point)
-    # Polygon
-    poligon = Polygon(poligon)
-    return poligon.contains(point)
+
+def generate_random_point(ROI):
+    polygon = Polygon(ROI)
+    min_x, min_y, max_x, max_y = polygon.bounds
+    while True:
+        x = random.uniform(min_x, max_x)
+        y = random.uniform(min_y, max_y)
+        if polygon.contains(Point(x, y)):
+            return (x, y)
 
 class SyntheticImageGenerator:
 
@@ -92,10 +95,11 @@ class SyntheticImageGenerator:
     def _validate_augmentation_path(self):
         # Check if augmentation pipeline file exists
         if self.augmentation_path.is_file() and self.augmentation_path.suffix == '.yml':
-            self.transforms = A.load(self.augmentation_path, data_format='yaml')
+            self.transforms = A.HorizontalFlip(p=1.0)
         else:
             self.transforms = None
-            warnings.warn(f'{self.augmentation_path} is not a file. No augmentations will be applied')
+
+        warnings.warn(f'{self.augmentation_path} is not a file. No augmentations will be applied')
 
     def _generate_image(self, image_number: int):
         # Randomly choose a background image
@@ -115,20 +119,21 @@ class SyntheticImageGenerator:
 
         # Compose foregrounds and background
         composite, annotations = self._compose_images(foregrounds, background_image_path)
+        if composite is not None:
 
-        # Create the file name (used for both composite and mask)
-        save_filename = f'{image_number:0{self.zero_padding}}'
+            # Create the file name (used for both composite and mask)
+            save_filename = f'{image_number:0{self.zero_padding}}'
 
-        # Save image to output folder
-        output_path = self.output_dir / f'{save_filename}.jpg'
-        composite = composite.convert('RGB')
-        composite.save(output_path)
+            # Save image to output folder
+            output_path = self.output_dir / f'{save_filename}.jpg'
+            composite = composite.convert('RGB')
+            composite.save(output_path)
 
-        # Save annotations
-        annotations['imagePath'] = f'{save_filename}.jpg'
-        annotations_output_path = self.output_dir / f'{save_filename}.json'
-        with open(annotations_output_path, 'w+') as output_file:
-            json.dump(annotations, output_file)
+            # Save annotations
+            annotations['imagePath'] = f'{save_filename}.jpg'
+            annotations_output_path = self.output_dir / f'{save_filename}.json'
+            with open(annotations_output_path, 'w+') as output_file:
+                json.dump(annotations, output_file)
 
     def _compose_images(self, foregrounds, background_image_path):
         # Open background image and convert to RGBA
@@ -167,7 +172,7 @@ class SyntheticImageGenerator:
             # Resize foreground (based on https://github.com/basedrhys/cocosynth/commit/f0b5d4d97009a3a070ba9967ff536c7dd71af6ef)
             if not self.scale_foreground_by_background_size:
                 # Apply random scale
-                scale = random.random() * .5 + .5  # Pick something between .5 and 1
+                scale = random.random() * .5 + .1  # Pick something between .5 and 1
                 new_size = (int(fg_image.size[0] * scale), int(fg_image.size[1] * scale))
             else:
                 # Scale the foreground based on the size of the resulting image
@@ -195,48 +200,51 @@ class SyntheticImageGenerator:
             max_y_position = composite.size[1] - fg_image.size[1]
             assert max_x_position >= 0 and max_y_position >= 0, \
                 f'foreground {fg["image_path"]} is too big ({fg_image.size[0]}x{fg_image.size[1]}) for the requested output size ({self.image_width}x{self.image_height}), check your input parameters'
-            foreground_position = (random.randint(0, max_x_position), random.randint(0, max_y_position))
-            while not check_point_in_polygon(foreground_position, ROI):
-                foreground_position = (random.randint(
-                    max(0, int(min(np.array(ROI)[:, 0]))), 
-                    min(max_x_position, int(max(np.array(ROI)[:, 0])))
-                    ), 
-                    random.randint(max(0, int(min(np.array(ROI)[:, 1])))
-                                   , min(max_y_position, int(max(np.array(ROI)[:, 1])))))
-            # # avoid collisions of foreground objects (based on https://github.com/basedrhys/cocosynth/commit/d009a0de17b154ca3b469e8d4c0a7afa8fa51271)
-            # if self.avoid_collisions:
-            #     fg_rect = [foreground_position[0],  # x1
-            #                foreground_position[1],  # y1
-            #                foreground_position[0] + fg_image.size[0],  # x2
-            #                foreground_position[1] + fg_image.size[1]]  # y2
 
-            #     visited_centroids = []
-            #     colliding_point = self._is_colliding(fg_rect, fg_list)
+            foreground_position = None
+            tic = time.time()
+            while foreground_position is None:
+                point = generate_random_point(ROI)
+                x, y = point
+                if time.time() - tic > 5:
+                    return None, None
+                if x < max_x_position and y < max_y_position:
+                    foreground_position = (int(x), int(y))
 
-            #     while colliding_point is not None:
-            #         # Move the fg away from the colliding point
-            #         step_size = 50
-            #         curr_centroid_x = int((fg_rect[0] + fg_rect[2]) / 2)
-            #         curr_centroid_y = int((fg_rect[1] + fg_rect[3]) / 2)
-            #         new_centroid_pos = self._get_new_centroid_pos(colliding_point,
-            #                                                       (curr_centroid_x, curr_centroid_y),
-            #                                                       step_size)
+            # avoid collisions of foreground objects (based on https://github.com/basedrhys/cocosynth/commit/d009a0de17b154ca3b469e8d4c0a7afa8fa51271)
+            if self.avoid_collisions:
+                fg_rect = [foreground_position[0],  # x1
+                           foreground_position[1],  # y1
+                           foreground_position[0] + fg_image.size[0],  # x2
+                           foreground_position[1] + fg_image.size[1]]  # y2
 
-            #         if self._visited_point_before(new_centroid_pos, visited_centroids):
-            #             print("Tried to re-visit point {}".format(new_centroid_pos))
-            #             fg_rect = None
-            #             break
-            #         visited_centroids.append(new_centroid_pos)
+                visited_centroids = []
+                colliding_point = self._is_colliding(fg_rect, fg_list)
 
-            #         fg_rect = self._get_rect_position(new_centroid_pos, fg_image)
-            #         colliding_point = self._is_colliding(fg_rect, fg_list)
+                while colliding_point is not None:
+                    # Move the fg away from the colliding point
+                    step_size = 50
+                    curr_centroid_x = int((fg_rect[0] + fg_rect[2]) / 2)
+                    curr_centroid_y = int((fg_rect[1] + fg_rect[3]) / 2)
+                    new_centroid_pos = self._get_new_centroid_pos(colliding_point,
+                                                                  (curr_centroid_x, curr_centroid_y),
+                                                                  step_size)
 
-            #     if fg_rect is None or self._outside_img(composite, fg_rect):
-            #         # print("Outside image {}".format(fg_rect))
-            #         continue
-            #     else:
-            #         paste_position = (int(fg_rect[0]), int(fg_rect[1]))
-            #         fg_list.append(fg_rect)
+                    if self._visited_point_before(new_centroid_pos, visited_centroids):
+                        print("Tried to re-visit point {}".format(new_centroid_pos))
+                        fg_rect = None
+                        break
+                    visited_centroids.append(new_centroid_pos)
+
+                    fg_rect = self._get_rect_position(new_centroid_pos, fg_image)
+                    colliding_point = self._is_colliding(fg_rect, fg_list)
+
+                if fg_rect is None or self._outside_img(composite, fg_rect):
+                    # print("Outside image {}".format(fg_rect))
+                    continue
+                else:
+                    paste_position = (int(fg_rect[0]), int(fg_rect[1]))
+                    fg_list.append(fg_rect)
 
             # Create a new foreground image as large as the composite and paste it on top
             new_fg_image = Image.new('RGBA', composite.size, color=(0, 0, 0, 0))
@@ -376,7 +384,7 @@ class SyntheticImageGenerator:
                 curr_centroid_y > img.size[1])
 
     def _transform_foreground(self, fg_image):
-        if self.transforms:
+        if self.transforms and random.choice([True, False]):
             return Image.fromarray(self.transforms(image=np.array(fg_image))['image'])
         return fg_image
 
@@ -395,7 +403,7 @@ if __name__ == '__main__':
     parser.add_argument('--input_dir', type=str, default="data/input", help='Path to the input directory. It must contain a backgrounds directory and a foregrounds directory')
     parser.add_argument('--output_dir', type=str, default="data/output", help='The directory where images and label files will be placed')
     parser.add_argument('--augmentation_path', type=str, default='transform.yml', help='Path to albumentations augmentation pipeline file')
-    parser.add_argument('--image_number', type=int, default=10, help='Number of images to create')
+    parser.add_argument('--image_number', type=int, default=100, help='Number of images to create')
     parser.add_argument('--max_objects_per_image', type=int, default=1, help='Maximum number of objects per images')
     parser.add_argument('--image_width', type=int, default=960, help='Width of the output images')
     parser.add_argument('--image_height', type=int, default=544, help='Height of the output images')
