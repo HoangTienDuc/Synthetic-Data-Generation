@@ -23,7 +23,9 @@ def extract_objects_from_labelme_data(input_dir, output_dir):
             data = json.load(f)
 
         # Load base64 image
-        im = Image.open(BytesIO(base64.b64decode(data['imageData']))).convert('RGBA')
+        # im = Image.open(BytesIO(base64.b64decode(data['imageData']))).convert('RGBA')
+        im = Image.open(json_file.replace(".json", ".png")).convert('RGBA')
+
         im_array = np.asarray(im)
 
         # Loop through all the annotations

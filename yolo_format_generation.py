@@ -26,7 +26,7 @@ def generate_random_point(ROI):
         if polygon.contains(Point(x, y)):
             return (x, y)
 
-def ger_rectangle_from_polygon(polygon_coors):
+def get_yolo_annotation_format(polygon_coors, image_size, label):
     # Iterate over the remaining points and update the minimum and maximum values
     min_x = max_x = polygon_coors[0][0]
     min_y = max_y = polygon_coors[0][1]
@@ -38,9 +38,13 @@ def ger_rectangle_from_polygon(polygon_coors):
         max_y = int(max(max_y, y))
 
     # Calculate the coordinates of the top-left and bottom-right corners
-    top_left = (min_x, min_y)
-    bottom_right = (max_x, max_y)
-    return top_left, bottom_right
+    xc = (min_x + max_x) / (2 * image_size[0])
+    yc = (min_y + max_y) / (2 * image_size[1])
+    object_w = (max_x - min_x) / image_size[0]
+    object_h = (max_y - min_y) / image_size[1]
+    object_info = [label, xc, yc,object_w, object_h]
+    str_object_info = list(map(str, object_info))
+    return " ".join(str_object_info)
 
 
 class SyntheticImageGenerator:
@@ -135,22 +139,28 @@ class SyntheticImageGenerator:
             })
 
         # Compose foregrounds and background
-        composite, annotations = self._compose_images(foregrounds, background_image_path)
+        composite, yolo_annotations = self._compose_images(foregrounds, background_image_path)
         if composite is not None:
 
             # Create the file name (used for both composite and mask)
             save_filename = f'{image_number:0{self.zero_padding}}'
 
+            label = yolo_annotations[0][0]
+            save_folder = self.output_dir / label
+            if not save_folder.exists():
+                save_folder.mkdir(parents=True)
+
             # Save image to output folder
-            output_path = self.output_dir / f'{save_filename}.jpg'
+            output_path = save_folder / f'{save_filename}.jpg'
             composite = composite.convert('RGB')
             composite.save(output_path)
 
             # Save annotations
-            annotations['imagePath'] = f'{save_filename}.jpg'
-            annotations_output_path = self.output_dir / f'{save_filename}.json'
-            with open(annotations_output_path, 'w+') as output_file:
-                json.dump(annotations, output_file)
+            
+            annotations_output_path = save_folder / f'{save_filename}.txt'
+            with open(annotations_output_path, "w") as file:
+                for item in yolo_annotations:
+                    file.write(str(item) + "\n")
 
     def _compose_images(self, foregrounds, background_image_path):
         # Open background image and convert to RGBA
@@ -176,11 +186,7 @@ class SyntheticImageGenerator:
         else:
             composite = background_image.resize((self.image_width, self.image_height), Image.ANTIALIAS)
 
-        annotations = dict()
-        annotations['shapes'] = []
-        annotations['imageWidth'] = self.image_width
-        annotations['imageHeight'] = self.image_height
-
+        yolo_annotations = []
         fg_list = []
 
         for fg in foregrounds:
@@ -283,15 +289,6 @@ class SyntheticImageGenerator:
             mask = np.float32(mask_arr)  # This is composed of 1s and 0s
             contours = measure.find_contours(mask, 0.5, positive_orientation='low')
 
-            annotation = dict()
-            annotation['points'] = []
-            annotation['label'] = fg['category']
-            annotation['group_id'] = None
-            annotation['shape_type'] = "polygon"
-            annotation['flags'] = {}
-            annotation['rect'] = []
-
-
             for contour in contours:
                 poly = Polygon(contour)
                 poly = poly.simplify(1.0, preserve_topology=False)
@@ -303,19 +300,13 @@ class SyntheticImageGenerator:
 
                     if poly.geom_type == 'Polygon':  # Ignore if still not a Polygon (could be a line or point)
                         segmentation = list(zip(*reversed(poly.exterior.coords.xy)))
-                        annotation['points'].extend(segmentation)
-                        top_left, bottom_right = ger_rectangle_from_polygon(segmentation)
-                        annotation['rect'].extend([top_left, bottom_right])
-
-
-            annotations['shapes'].append(annotation)
-
+                        yolo_annotation = get_yolo_annotation_format(segmentation, composite.size, fg['category'])
+                        yolo_annotations.append(yolo_annotation)
         # Save images as base64 string
         buffered = BytesIO()
         composite.convert('RGB').save(buffered, format="JPEG")
-        annotations['imageData'] = base64.b64encode(buffered.getvalue()).decode()
 
-        return composite, annotations
+        return composite, yolo_annotations
 
     @staticmethod
     def _get_point_to_move_from(colliding_centroids):
